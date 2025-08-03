@@ -1,0 +1,3 @@
+[submodule "amp-docs"]
+	path = amp-docs
+	url = git@github.com:agentmeshprotocol/amp-docs.git

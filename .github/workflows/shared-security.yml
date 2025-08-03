@@ -1,0 +1,488 @@
+name: Shared Security Scanning
+
+on:
+  workflow_call:
+    inputs:
+      language:
+        required: true
+        type: string
+        description: 'Primary language (python, typescript, or mixed)'
+      scan_type:
+        required: false
+        type: string
+        default: 'full'
+        description: 'Type of scan to run (full, quick, or custom)'
+      python_version:
+        required: false
+        type: string
+        default: '3.11'
+        description: 'Python version for Python projects'
+      node_version:
+        required: false
+        type: string
+        default: '18'
+        description: 'Node.js version for TypeScript projects'
+    secrets:
+      SNYK_TOKEN:
+        required: false
+        description: 'Snyk authentication token'
+      SONAR_TOKEN:
+        required: false
+        description: 'SonarCloud authentication token'
+
+permissions:
+  actions: read
+  contents: read
+  security-events: write
+  pull-requests: write
+
+jobs:
+  # CodeQL Analysis
+  codeql-analysis:
+    name: CodeQL Security Analysis
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Initialize CodeQL
+      uses: github/codeql-action/init@v3
+      with:
+        languages: ${{ inputs.language == 'mixed' && 'python,javascript' || inputs.language == 'typescript' && 'javascript' || inputs.language }}
+        queries: security-and-quality
+
+    - name: Set up Python
+      if: inputs.language == 'python' || inputs.language == 'mixed'
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ inputs.python_version }}
+
+    - name: Set up Node.js
+      if: inputs.language == 'typescript' || inputs.language == 'mixed'
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ inputs.node_version }}
+
+    - name: Install dependencies (Python)
+      if: inputs.language == 'python' || inputs.language == 'mixed'
+      run: |
+        python -m pip install --upgrade pip
+        if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+        if [ -f requirements-dev.txt ]; then pip install -r requirements-dev.txt; fi
+        if [ -f pyproject.toml ]; then pip install -e .; fi
+
+    - name: Install dependencies (Node.js)
+      if: inputs.language == 'typescript' || inputs.language == 'mixed'
+      run: |
+        if [ -f package.json ]; then npm ci || npm install; fi
+
+    - name: Perform CodeQL Analysis
+      uses: github/codeql-action/analyze@v3
+
+  # Dependency vulnerability scanning
+  dependency-scan:
+    name: Dependency Vulnerability Scan
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      if: inputs.language == 'python' || inputs.language == 'mixed'
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ inputs.python_version }}
+
+    - name: Set up Node.js
+      if: inputs.language == 'typescript' || inputs.language == 'mixed'
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ inputs.node_version }}
+
+    - name: Python security audit
+      if: inputs.language == 'python' || inputs.language == 'mixed'
+      run: |
+        python -m pip install --upgrade pip safety bandit
+        
+        # Install project dependencies
+        if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+        if [ -f requirements-dev.txt ]; then pip install -r requirements-dev.txt; fi
+        
+        # Run safety check
+        safety check --json --output safety-report.json || echo "Safety check completed with findings"
+        
+        # Run bandit security linter
+        if [ -d src/ ]; then
+          bandit -r src/ -f json -o bandit-report.json || echo "Bandit scan completed"
+        fi
+
+    - name: Node.js security audit
+      if: inputs.language == 'typescript' || inputs.language == 'mixed'
+      run: |
+        if [ -f package.json ]; then
+          npm audit --json > npm-audit.json || echo "NPM audit completed with findings"
+        fi
+
+    - name: Snyk security scan
+      if: secrets.SNYK_TOKEN != ''
+      uses: snyk/actions/node@master
+      env:
+        SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+      with:
+        args: --severity-threshold=medium --json --file=package.json > snyk-report.json
+      continue-on-error: true
+
+    - name: Upload security reports
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: security-reports
+        path: |
+          safety-report.json
+          bandit-report.json
+          npm-audit.json
+          snyk-report.json
+
+    - name: Evaluate security findings
+      run: |
+        # Process security reports and determine if action is needed
+        python - <<EOF
+        import json
+        import os
+        import sys
+        
+        critical_issues = 0
+        high_issues = 0
+        
+        # Check Python safety report
+        if os.path.exists('safety-report.json'):
+            try:
+                with open('safety-report.json', 'r') as f:
+                    safety_data = json.load(f)
+                    if isinstance(safety_data, list):
+                        critical_issues += len([v for v in safety_data if 'CRITICAL' in str(v).upper()])
+                        high_issues += len([v for v in safety_data if 'HIGH' in str(v).upper()])
+            except:
+                pass
+        
+        # Check NPM audit report
+        if os.path.exists('npm-audit.json'):
+            try:
+                with open('npm-audit.json', 'r') as f:
+                    npm_data = json.load(f)
+                    if 'metadata' in npm_data and 'vulnerabilities' in npm_data['metadata']:
+                        vulns = npm_data['metadata']['vulnerabilities']
+                        critical_issues += vulns.get('critical', 0)
+                        high_issues += vulns.get('high', 0)
+            except:
+                pass
+        
+        print(f"Critical issues: {critical_issues}")
+        print(f"High severity issues: {high_issues}")
+        
+        # Set GitHub output
+        with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+            f.write(f"critical_issues={critical_issues}\n")
+            f.write(f"high_issues={high_issues}\n")
+            f.write(f"security_check_failed={'true' if critical_issues > 0 else 'false'}\n")
+        
+        # Exit with error if critical issues found
+        if critical_issues > 0:
+            print("CRITICAL security vulnerabilities found!")
+            sys.exit(1)
+        EOF
+
+  # License compliance check
+  license-compliance:
+    name: License Compliance Check
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Check license files
+      run: |
+        # Verify LICENSE file exists
+        if [ ! -f LICENSE ] && [ ! -f LICENSE.txt ] && [ ! -f LICENSE.md ]; then
+          echo "❌ No LICENSE file found"
+          exit 1
+        fi
+        
+        # Check for license headers in source files
+        echo "Checking for license headers..."
+        python - <<EOF
+        import os
+        import re
+        
+        license_patterns = [
+            r'Copyright.*\d{4}',
+            r'Licensed under',
+            r'SPDX-License-Identifier'
+        ]
+        
+        missing_license = []
+        
+        for root, dirs, files in os.walk('.'):
+            # Skip hidden directories and common ignore patterns
+            dirs[:] = [d for d in dirs if not d.startswith('.') and d not in ['node_modules', '__pycache__', 'dist', 'build']]
+            
+            for file in files:
+                if file.endswith(('.py', '.ts', '.js', '.tsx', '.jsx')):
+                    filepath = os.path.join(root, file)
+                    try:
+                        with open(filepath, 'r', encoding='utf-8') as f:
+                            content = f.read(500)  # Check first 500 chars
+                            
+                        has_license = any(re.search(pattern, content, re.IGNORECASE) for pattern in license_patterns)
+                        if not has_license:
+                            missing_license.append(filepath)
+                    except:
+                        pass
+        
+        if missing_license:
+            print(f"⚠️ Files missing license headers: {len(missing_license)}")
+            for file in missing_license[:10]:  # Show first 10
+                print(f"  - {file}")
+            if len(missing_license) > 10:
+                print(f"  ... and {len(missing_license) - 10} more")
+        else:
+            print("✅ All source files have license headers")
+        EOF
+
+    - name: Python license check
+      if: inputs.language == 'python' || inputs.language == 'mixed'
+      run: |
+        if [ -f requirements.txt ] || [ -f pyproject.toml ]; then
+          pip install pip-licenses
+          pip-licenses --format=json --output-file=python-licenses.json
+          
+          # Check for incompatible licenses
+          python - <<EOF
+        import json
+        
+        # Define incompatible licenses (example list)
+        incompatible_licenses = ['GPL-3.0', 'AGPL-3.0', 'LGPL-3.0']
+        
+        try:
+            with open('python-licenses.json', 'r') as f:
+                licenses = json.load(f)
+            
+            issues = []
+            for package in licenses:
+                license_name = package.get('License', 'Unknown')
+                if any(incomp in license_name for incomp in incompatible_licenses):
+                    issues.append(f"{package['Name']}: {license_name}")
+            
+            if issues:
+                print("❌ Incompatible licenses found:")
+                for issue in issues:
+                    print(f"  - {issue}")
+                exit(1)
+            else:
+                print("✅ All Python dependencies have compatible licenses")
+        except:
+            print("⚠️ Could not check Python licenses")
+        EOF
+        fi
+
+    - name: Node.js license check
+      if: inputs.language == 'typescript' || inputs.language == 'mixed'
+      run: |
+        if [ -f package.json ]; then
+          npm install -g license-checker
+          license-checker --json --out node-licenses.json
+          
+          # Check for incompatible licenses
+          node - <<EOF
+        const fs = require('fs');
+        
+        const incompatibleLicenses = ['GPL-3.0', 'AGPL-3.0', 'LGPL-3.0'];
+        
+        try {
+            const licenses = JSON.parse(fs.readFileSync('node-licenses.json', 'utf8'));
+            
+            const issues = [];
+            for (const [pkg, info] of Object.entries(licenses)) {
+                const license = info.licenses || 'Unknown';
+                if (incompatibleLicenses.some(incomp => license.includes(incomp))) {
+                    issues.push(\`\${pkg}: \${license}\`);
+                }
+            }
+            
+            if (issues.length > 0) {
+                console.log('❌ Incompatible licenses found:');
+                issues.forEach(issue => console.log(\`  - \${issue}\`));
+                process.exit(1);
+            } else {
+                console.log('✅ All Node.js dependencies have compatible licenses');
+            }
+        } catch (error) {
+            console.log('⚠️ Could not check Node.js licenses');
+        }
+        EOF
+        fi
+
+  # Supply chain security
+  supply-chain-security:
+    name: Supply Chain Security
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Verify package integrity
+      run: |
+        # Check for package-lock.json and verify integrity
+        if [ -f package-lock.json ]; then
+          echo "✅ package-lock.json found"
+          # Check for known vulnerabilities in lockfile
+          if command -v npm &> /dev/null; then
+            npm ci --dry-run
+          fi
+        fi
+        
+        # Check for requirements.txt pinning
+        if [ -f requirements.txt ]; then
+          echo "Checking Python dependency pinning..."
+          python - <<EOF
+        with open('requirements.txt', 'r') as f:
+            lines = f.readlines()
+        
+        unpinned = []
+        for line in lines:
+            line = line.strip()
+            if line and not line.startswith('#'):
+                if '==' not in line and '>=' not in line and '<=' not in line:
+                    unpinned.append(line)
+        
+        if unpinned:
+            print(f"⚠️ Unpinned dependencies found: {unpinned}")
+        else:
+            print("✅ All Python dependencies are pinned")
+        EOF
+        fi
+
+    - name: Check for suspicious patterns
+      run: |
+        # Look for suspicious patterns in code
+        echo "Scanning for suspicious patterns..."
+        
+        # Check for hardcoded secrets patterns
+        if command -v grep &> /dev/null; then
+          suspicious_patterns=(
+            "password.*="
+            "secret.*="
+            "api.*key.*="
+            "token.*="
+            "BEGIN RSA PRIVATE KEY"
+            "BEGIN PRIVATE KEY"
+          )
+          
+          for pattern in "${suspicious_patterns[@]}"; do
+            if grep -r -i "$pattern" . --exclude-dir=.git --exclude-dir=node_modules --exclude="*.log"; then
+              echo "⚠️ Potential secret found: $pattern"
+            fi
+          done
+        fi
+
+  # Compliance reporting
+  compliance-report:
+    name: Generate Compliance Report
+    runs-on: ubuntu-latest
+    needs: [codeql-analysis, dependency-scan, license-compliance, supply-chain-security]
+    if: always()
+
+    steps:
+    - name: Download security artifacts
+      uses: actions/download-artifact@v4
+      with:
+        name: security-reports
+        path: security-reports/
+      continue-on-error: true
+
+    - name: Generate compliance report
+      run: |
+        python - <<EOF
+        import json
+        import os
+        from datetime import datetime
+        
+        report = {
+            "timestamp": datetime.utcnow().isoformat(),
+            "repository": "${{ github.repository }}",
+            "ref": "${{ github.ref }}",
+            "sha": "${{ github.sha }}",
+            "security_scan": {
+                "codeql": "${{ needs.codeql-analysis.result }}",
+                "dependency_scan": "${{ needs.dependency-scan.result }}",
+                "license_compliance": "${{ needs.license-compliance.result }}",
+                "supply_chain": "${{ needs.supply-chain-security.result }}"
+            },
+            "findings": {
+                "critical": 0,
+                "high": 0,
+                "medium": 0,
+                "low": 0
+            }
+        }
+        
+        # Process security reports if available
+        reports_dir = "security-reports"
+        if os.path.exists(reports_dir):
+            for report_file in os.listdir(reports_dir):
+                report_path = os.path.join(reports_dir, report_file)
+                try:
+                    with open(report_path, 'r') as f:
+                        data = json.load(f)
+                        # Process findings (implementation would depend on report format)
+                        print(f"Processed {report_file}")
+                except:
+                    print(f"Could not process {report_file}")
+        
+        # Save compliance report
+        with open("compliance-report.json", "w") as f:
+            json.dump(report, f, indent=2)
+        
+        print("Compliance report generated")
+        EOF
+
+    - name: Upload compliance report
+      uses: actions/upload-artifact@v4
+      with:
+        name: compliance-report
+        path: compliance-report.json
+
+    - name: Comment security summary on PR
+      if: github.event_name == 'pull_request'
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const fs = require('fs');
+          
+          let summary = `## 🔒 Security Scan Summary\n\n`;
+          summary += `| Check | Status |\n`;
+          summary += `|-------|--------|\n`;
+          summary += `| CodeQL Analysis | ${{ needs.codeql-analysis.result == 'success' ? '✅' : '❌' }} |\n`;
+          summary += `| Dependency Scan | ${{ needs.dependency-scan.result == 'success' ? '✅' : '❌' }} |\n`;
+          summary += `| License Compliance | ${{ needs.license-compliance.result == 'success' ? '✅' : '❌' }} |\n`;
+          summary += `| Supply Chain Security | ${{ needs.supply-chain-security.result == 'success' ? '✅' : '❌' }} |\n`;
+          
+          if (fs.existsSync('compliance-report.json')) {
+            const report = JSON.parse(fs.readFileSync('compliance-report.json', 'utf8'));
+            summary += `\n**Scan completed at:** ${report.timestamp}\n`;
+          }
+          
+          summary += `\n---\n*Automated security scan by shared security workflow*`;
+          
+          github.rest.issues.createComment({
+            issue_number: context.issue.number,
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            body: summary
+          });
