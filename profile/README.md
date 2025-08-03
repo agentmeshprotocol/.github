@@ -1,7 +1,5 @@
 # Agent Mesh Protocol
 
-![AMP Logo](https://agentmeshprotocol.io/amp-logo.png)
-
 Welcome to the Agent Mesh Protocol (AMP) organization! AMP is a standardized protocol for autonomous AI agent communication, enabling seamless interoperability between different AI frameworks and platforms.
 
 ## Overview
