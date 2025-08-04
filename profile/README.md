@@ -268,16 +268,20 @@ amp_crew = CrewAIAMPAgent(
 ## 🤝 Contributing Workflow
 
 ```mermaid
-gitgraph
-    commit id: "Fork Repository"
-    branch feature
-    checkout feature
-    commit id: "Implement Feature"
-    commit id: "Add Tests"
-    commit id: "Update Docs"
-    checkout main
-    merge feature
-    commit id: "Release"
+flowchart TD
+    A[Fork Repository] --> B[Create Feature Branch]
+    B --> C[Implement Feature]
+    C --> D[Add Tests]
+    D --> E[Update Documentation]
+    E --> F[Create Pull Request]
+    F --> G{Code Review}
+    G -->|Approved| H[Merge to Main]
+    G -->|Changes Requested| C
+    H --> I[Release]
+    
+    style A fill:#e1f5fe
+    style I fill:#c8e6c9
+    style G fill:#fff3e0
 ```
 
 ## 📈 Adoption & Community
