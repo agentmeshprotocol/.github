@@ -147,42 +147,6 @@ mindmap
       Video Understanding
 ```
 
-## 📦 Repository Ecosystem
-
-```mermaid
-graph LR
-    subgraph "Core Protocol"
-        CORE[agentmeshprotocol]
-    end
-    
-    subgraph "SDKs"
-        PY[amp-python-sdk]
-        TS[amp-typescript-sdk]
-        RS[amp-rust-sdk]
-    end
-    
-    subgraph "Documentation"
-        DOCS[amp-docs]
-        EXAMPLES[amp-examples]
-    end
-    
-    subgraph "Community"
-        COMM[amp-community]
-        GITHUB[.github]
-    end
-    
-    CORE --> PY
-    CORE --> TS
-    CORE --> RS
-    
-    CORE --> DOCS
-    CORE --> EXAMPLES
-    
-    DOCS --> COMM
-    EXAMPLES --> COMM
-    
-    COMM --> GITHUB
-```
 
 ## 🛠️ Quick Start
 
