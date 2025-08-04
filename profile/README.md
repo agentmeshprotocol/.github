@@ -284,12 +284,12 @@ flowchart TD
     style G fill:#fff3e0
 ```
 
-## 📈 Adoption & Community
+## 📈 Development Status
 
-- **Growing Ecosystem**: 50+ community contributors
-- **Production Ready**: Used by enterprises for agent orchestration
-- **Active Development**: Weekly releases and improvements
-- **Comprehensive Testing**: 95%+ test coverage across all SDKs
+- **Early Stage**: Protocol specification and reference implementations
+- **Open Source**: MIT licensed and welcoming contributors
+- **Active Development**: Core protocol and SDK development in progress
+- **Standards Focus**: Building comprehensive specification and validation tools
 
 ## 🔗 Resources
 
